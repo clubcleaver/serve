@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"io/fs"
@@ -60,13 +59,27 @@ func handle(conn net.Conn, fsys fs.FS) {
 	req := make([]byte, 1024)
 	_, err := conn.Read(req)
 	if err != nil {
-		log.Fatal(err.Error())
+		conn.Write(getResponse(resBad))
+		fmt.Fprint(conn, "Bad Request")
+		return
 	}
 
-	// Get First line from request
-	flInd := bytes.Index(req, []byte("\r\n"))
-	flTemp := req[:flInd]
-	firstLine := string(bytes.Clone(flTemp)) // purges the original req body
+	if len(req) > 1024 {
+		conn.Write(getResponse(resBad))
+		fmt.Fprint(conn, "Request too large")
+		return
+	}
+
+	// req to string
+	reqParts := strings.Split(string(req), "\r\n")
+
+	if len(reqParts) == 0 {
+		conn.Write(getResponse(resBad))
+		fmt.Fprint(conn, "Bad Protocol")
+		return
+	}
+
+	firstLine := reqParts[0]
 
 	// Parse First line
 	flParts := strings.Split(firstLine, " ")
@@ -115,14 +128,19 @@ func handle(conn net.Conn, fsys fs.FS) {
 
 	// if file is of type file - stream to client
 	if !ft.IsDir() {
-		// Stream File
-		conn.Write(getResponse(resOK))
+		// Stream File - Downloadable
+		// conn.Write(getResponse(resOK))
+		fmt.Fprintf(conn,
+			"%s 200 OK\r\nContent-Disposition: attachment;filename=\"%s\"\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+			proto, ft.Name(), ft.Size(),
+		)
 		_, err = io.Copy(conn, f)
 		if err != nil {
 			conn.Write(getResponse(resFail))
 			fmt.Fprint(conn, "Server Error")
 			return
 		}
+
 		return
 	}
 
