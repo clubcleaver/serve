@@ -17,12 +17,12 @@ This tool is designed to be run as a single binary, making it perfect for quick 
 - **Graceful Shutdown**: Handles `Ctrl-C` to shut down cleanly, waiting for active transfers to complete.
 - **Network Discovery**: Displays accessible local network IP addresses on startup for easy access from other devices.
 
-## Setup
+## One Time Setup
 
 ```BASH
-curl https://github.com/clubcleaver/serve -o serve
-cp ./serve /usr/local/bin/.
-export PATH="$PATH:/usr/local/bin"
+wget https://github.com/clubcleaver/serve/releases/download/v1.0.0/serve
+chmod +x serve
+./serve 8000
 ```
 
 ## Usage
