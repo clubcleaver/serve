@@ -88,7 +88,3 @@ Press **`Ctrl-C`** in the terminal where the server is running. It will perform 
 
 ## License
 This project is licensed under the MIT License.
-
-```
-
-```
