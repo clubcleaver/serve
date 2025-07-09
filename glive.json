@@ -1,0 +1,4 @@
+{
+  "watch": ".",
+  "command": "go run main.go"
+}
