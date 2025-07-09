@@ -1,3 +1,3 @@
-module github.com/clubcleaver/serve/m
+module github.com/clubcleaver/serve
 
 go 1.24.4

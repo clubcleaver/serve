@@ -1,16 +1,21 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"net"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
-const port = ":8080"
+var port = ":8080"
 
 const proto = "HTTP/1.1"
 const method = "GET"
@@ -26,6 +31,24 @@ const (
 
 func main() {
 
+	if len(os.Args) != 1 {
+		a := os.Args[1]
+		intA, err := strconv.Atoi(a)
+		if err != nil {
+			log.Fatal("Port argument must be a number")
+		}
+		if intA <= 0 || intA > 65535 {
+			log.Fatal("Port out or range: 0 - 65535")
+		}
+
+		if intA > 0 && intA <= 1023 {
+			if os.Getuid() != 0 {
+				log.Fatal("user not SUDO, port not allowed")
+			}
+		}
+		port = fmt.Sprintf(":"+"%s", a)
+	}
+
 	root, err := os.OpenRoot(".")
 	if err != nil {
 		log.Fatalf("Could not open directory: %v. ERR: %v", ".", err.Error())
@@ -37,23 +60,50 @@ func main() {
 
 	In, err := net.Listen("tcp", port)
 	if err != nil {
-		log.Fatal("Could not start listner on: 8080")
+		log.Fatalf("Could not start listner on: %s", port)
 	}
-	defer In.Close()
 
-	fmt.Printf("Listening on 0.0.0.0%s", port)
+	// SERVER
+	printInfo()
+	swg := new(sync.WaitGroup)
+	swg.Add(1)
+	go server(In, rootFS, swg)
+
+	// Cracefull Exist
+	intChan := make(chan os.Signal, 1)
+	signal.Notify(intChan, os.Interrupt)
+	<-intChan // Interrupt Signal Capture
+	err = In.Close()
+	if err != nil {
+		fmt.Printf("Failed to close listner. ERR: %s", err.Error())
+	}
+	swg.Wait()
+	fmt.Printf("\nServer Shutdown\n")
+}
+
+func server(In net.Listener, rootFS fs.FS, servWG *sync.WaitGroup) {
+	defer servWG.Done()
+	wg := new(sync.WaitGroup)
+
 	for {
 		conn, err := In.Accept()
 		if err != nil {
-			log.Fatal(err.Error())
+			if errors.Is(err, net.ErrClosed) {
+				break
+			}
+			fmt.Printf("Error accepting request: %v", err.Error())
+			break
 		}
-		go handle(conn, rootFS) // Request Handler
+		wg.Add(1)
+		go handle(conn, rootFS, wg) // Request Handler
 	}
+	wg.Wait()
 }
 
 // Request Handler
-func handle(conn net.Conn, fsys fs.FS) {
+func handle(conn net.Conn, fsys fs.FS, wg *sync.WaitGroup) {
 
+	defer wg.Done()
 	defer conn.Close()
 
 	req := make([]byte, 1024)
@@ -99,11 +149,14 @@ func handle(conn net.Conn, fsys fs.FS) {
 	// Incase the request arrives from a browser
 	// check for favicon.ico
 	if flParts[1] == "/favicon.ico" {
+		conn.Write([]byte("HTTP/1.1 204 No Content\r\n\r\n"))
 		return
 	}
 
 	// return the asked directory / file
-	filteredPath := strings.Join(strings.Split(flParts[1], "")[1:], "")
+	filteredPath := flParts[1]
+	filteredPath = strings.TrimPrefix(filteredPath, "/")
+	filteredPath = strings.TrimSuffix(filteredPath, "/")
 
 	if filteredPath == "" {
 		filteredPath = "."
@@ -113,7 +166,7 @@ func handle(conn net.Conn, fsys fs.FS) {
 	f, err := fsys.Open(filteredPath)
 	if err != nil {
 		conn.Write(getResponse(resNF))
-		fmt.Fprint(conn, "File Not Fount")
+		fmt.Fprint(conn, "Not Fount")
 		return
 	}
 	defer f.Close()
@@ -129,7 +182,6 @@ func handle(conn net.Conn, fsys fs.FS) {
 	// if file is of type file - stream to client
 	if !ft.IsDir() {
 		// Stream File - Downloadable
-		// conn.Write(getResponse(resOK))
 		fmt.Fprintf(conn,
 			"%s 200 OK\r\nContent-Disposition: attachment;filename=\"%s\"\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
 			proto, ft.Name(), ft.Size(),
@@ -140,6 +192,7 @@ func handle(conn net.Conn, fsys fs.FS) {
 			fmt.Fprint(conn, "Server Error")
 			return
 		}
+		fmt.Printf("[%s] - Sent file: \"%s\", to remote: \"%s\"\n", time.Now().Format(time.DateTime), ft.Name(), conn.RemoteAddr())
 
 		return
 	}
@@ -154,7 +207,8 @@ func handle(conn net.Conn, fsys fs.FS) {
 
 	// we have the query
 	conn.Write(getResponse(resOK))
-	fmt.Fprintf(conn, "you asked for %v\n", flParts[1])
+	fmt.Fprintf(conn, "you asked for %v\n\n", flParts[1])
+	fmt.Printf("[%s] - Sent Dir: \"%s\", to remote: \"%s\"\n", time.Now().Format(time.DateTime), ft.Name(), conn.RemoteAddr())
 	for _, v := range dirInfo {
 		fmt.Fprintf(conn, "%v\n", v)
 	}
@@ -164,4 +218,28 @@ func handle(conn net.Conn, fsys fs.FS) {
 // first line builder
 func getResponse(status status) []byte {
 	return fmt.Appendf(nil, "%s %s\r\n\r\n", proto, status)
+}
+
+// Print Starting info
+func printInfo() {
+	wd, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Get Interfaces
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("serving dir: \"%s\" - via HTTP \n\n", wd)
+	fmt.Printf("-- http://localhost%s\n", port)
+	for _, v := range addrs {
+		if ipNet, ok := v.(*net.IPNet); ok {
+			if ipNet.IP.To4() != nil && !ipNet.IP.IsLoopback() {
+				fmt.Printf("-- http://%s%s\n", ipNet.IP, port)
+			}
+		}
+	}
+	fmt.Println()
 }

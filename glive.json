@@ -1,4 +1,5 @@
 {
   "watch": ".",
-  "command": "go run main.go"
+  "command": "go run main.go",
+  "skip": [".git"]
 }
